@@ -371,6 +371,26 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
   .qwrap.m-table .table-row { gap:2px; }
   .qwrap.m-table .cell-char { font-size:19px; }
 }
+
+/* ---- 書き取り練習 ---- */
+.dict-stage { min-height:0; gap:14px; padding:8px 0 4px; }
+.dict-status { color:var(--dim); text-align:center; min-height:2.6em; margin:0; font-size:18px; }
+.dict-actions { justify-content:center; margin-top:8px; }
+.dict-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px,1fr)); gap:8px; }
+.dict-cell { min-width:0; display:grid; grid-template-columns:2em 1.4em 1fr; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:8px 12px; }
+.dict-no { color:var(--dim); font-size:15px; text-align:right; }
+.dict-ch { font-size:26px; text-align:center; }
+.dict-code { color:var(--y); font-size:20px; letter-spacing:.1em; white-space:nowrap; }
+@media (max-width:600px) {
+  .dict-grid { grid-template-columns:1fr 1fr; gap:6px; }
+  .dict-cell { padding:6px 8px; gap:4px; grid-template-columns:1.6em 1.2em minmax(0,1fr); }
+  .dict-ch { font-size:22px; }
+  .dict-code { font-size:12.5px; letter-spacing:0; word-spacing:-2px; }
+  .dict-stage .lamp-large { width:150px; height:150px; }
+}
+.dict-final { min-height:0; gap:12px; padding:24px 0; text-align:center; }
+.dict-final-lead { margin:0; }
+.dict-final-count { font-size:96px; line-height:1; color:var(--y); margin:0; font-weight:700; }
 </style>
 </head>
 <body>
@@ -585,7 +605,31 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
 
   // src/core/quiz.ts
   var QUIZ_KINDS = ["char-to-code", "code-to-char", "sound-to-char", "light-to-code", "light-to-char"];
-  var POOL_NAMES = ["kana", "symbols", "numbers", "kana-symbols", "all"];
+  var POOL_NAMES = ["kana", "symbols", "numbers", "kana-symbols", "kana-numbers", "symbols-numbers", "all"];
+  var RANGE_PARTS = [
+    { part: "kana", label: "\u304B\u306A" },
+    { part: "symbols", label: "\u6FC1\u70B9\u30FB\u8A18\u53F7" },
+    { part: "numbers", label: "\u6570\u5B57" }
+  ];
+  function poolFromParts(parts) {
+    const k = parts.includes("kana");
+    const s = parts.includes("symbols");
+    const n = parts.includes("numbers");
+    if (k && s && n) return "all";
+    if (k && s) return "kana-symbols";
+    if (k && n) return "kana-numbers";
+    if (s && n) return "symbols-numbers";
+    if (s) return "symbols";
+    if (n) return "numbers";
+    return "kana";
+  }
+  function partsOfPool(pool) {
+    return RANGE_PARTS.map((r) => r.part).filter((part) => poolIncludes(pool, part));
+  }
+  function poolIncludes(pool, part) {
+    if (pool === "all") return true;
+    return pool.split("-").includes(part);
+  }
   function answerType(kind) {
     return kind === "char-to-code" || kind === "light-to-code" ? "code" : "char";
   }
@@ -599,6 +643,10 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
         return data.list(["number"]);
       case "kana-symbols":
         return data.list(["kana", "diacritic", "symbol"]);
+      case "kana-numbers":
+        return data.list(["kana", "number"]);
+      case "symbols-numbers":
+        return data.list(["diacritic", "symbol", "number"]);
       case "all":
         return data.list(["kana", "diacritic", "symbol", "number"]);
     }
@@ -793,7 +841,8 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
     practicePool: "kana",
     examCount: 50,
     examKind: "mixed",
-    examPool: "kana"
+    examPool: "kana",
+    dictationPool: "kana"
   };
   function num(v, def, min, max) {
     return typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : def;
@@ -821,7 +870,8 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
       practicePool: pick(r.practicePool, POOL_NAMES, d.practicePool),
       examCount: pick(r.examCount, EXAM_COUNTS, d.examCount),
       examKind: pick(r.examKind, EXAM_KINDS, d.examKind),
-      examPool: pick(r.examPool, POOL_NAMES, d.examPool)
+      examPool: pick(r.examPool, POOL_NAMES, d.examPool),
+      dictationPool: pick(r.dictationPool, POOL_NAMES, d.dictationPool)
     };
   }
 
@@ -1081,7 +1131,7 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
 
   // src/renderer/player.ts
   var RAMP = 3e-3;
-  var Player = class {
+  var Player = class _Player {
     ctx = null;
     osc = null;
     gain = null;
@@ -1098,15 +1148,55 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
       this.indicators.delete(i);
       i.set(false);
     }
-    ensure() {
-      if (!this.ctx) {
-        this.ctx = new AudioContext();
-        this.gain = this.ctx.createGain();
-        this.gain.gain.value = 0;
-        this.gain.connect(this.ctx.destination);
+    constructor() {
+      if (typeof document !== "undefined") {
+        const wake = () => {
+          if (document.visibilityState === "visible") this.wake();
+        };
+        document.addEventListener("visibilitychange", wake);
+        window.addEventListener("pageshow", wake);
+        window.addEventListener("focus", wake);
       }
-      if (this.ctx.state === "suspended") void this.ctx.resume();
-      return this.ctx;
+    }
+    make() {
+      const ctx = new AudioContext();
+      this.ctx = ctx;
+      this.gain = ctx.createGain();
+      this.gain.gain.value = 0;
+      this.gain.connect(ctx.destination);
+      return ctx;
+    }
+    static isRunning(c) {
+      return c.state === "running";
+    }
+    wake() {
+      const c = this.ctx;
+      if (c && !_Player.isRunning(c) && c.state !== "closed") void c.resume().catch(() => void 0);
+    }
+    /** 画面をタップしたとき（ユーザーの操作の中）に呼ぶと、音が出せる状態にしておける。 */
+    prime() {
+      void this.running();
+    }
+    /**
+     * 音を出せる AudioContext を返す。止まっていたら動かし直し、それでもだめなら作り直す。
+     * どうしても動かないときは null（円だけで動かす）。
+     * 「suspended」だけでなく、iOS の「interrupted」も止まっている状態として扱う。
+     */
+    async running() {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      let ctx = this.ctx && this.ctx.state !== "closed" ? this.ctx : this.make();
+      if (!_Player.isRunning(ctx)) {
+        await Promise.race([ctx.resume().catch(() => void 0), wait(400)]);
+        if (!_Player.isRunning(ctx)) {
+          try {
+            void ctx.close();
+          } catch {
+          }
+          ctx = this.make();
+          await Promise.race([ctx.resume().catch(() => void 0), wait(400)]);
+        }
+      }
+      return _Player.isRunning(ctx) ? ctx : null;
     }
     setAll(on) {
       for (const i of this.indicators) i.set(on);
@@ -1129,13 +1219,15 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
       this.setAll(false);
     }
     /** 時間割を再生する。終わると true、途中で止められると false を返す。 */
-    play(segments) {
+    async play(segments, onStart) {
       this.stop();
       const my = this.token;
-      const ctx = this.ensure();
-      const gain = this.gain;
+      const ctx = await this.running();
+      if (my !== this.token) return false;
       const lead = 0.08;
-      const t0 = ctx.currentTime + lead;
+      const t0 = (ctx ? ctx.currentTime : 0) + lead;
+      const startWall = performance.now();
+      onStart?.(startWall + lead * 1e3);
       const on = [];
       let t = 0;
       for (const seg of segments) {
@@ -1143,7 +1235,8 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
         t += seg.ms / 1e3;
       }
       const total = t;
-      if (this.soundOn) {
+      const gain = this.gain;
+      if (ctx && gain && this.soundOn) {
         const osc = ctx.createOscillator();
         osc.type = "sine";
         osc.frequency.value = this.pitchHz;
@@ -1160,11 +1253,21 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
         osc.start(t0 - 0.01);
         osc.stop(t0 + total + 0.05);
       }
-      const latency = this.soundOn ? ctx.outputLatency || 0 : 0;
+      const latency = ctx && this.soundOn ? ctx.outputLatency || 0 : 0;
       return new Promise((resolve) => {
+        let lastAudio = ctx ? ctx.currentTime : 0;
+        let lastWall = startWall;
+        let stuck = !ctx;
         const tick = () => {
           if (my !== this.token) return resolve(false);
-          const now = ctx.currentTime - latency - t0;
+          const wall = performance.now();
+          if (ctx && !stuck) {
+            if (ctx.currentTime !== lastAudio) {
+              lastAudio = ctx.currentTime;
+              lastWall = wall;
+            } else if (wall - lastWall > 400) stuck = true;
+          }
+          const now = ctx && !stuck ? ctx.currentTime - latency - t0 : (wall - startWall) / 1e3 - lead;
           const lit = on.some((iv) => now >= iv.s && now < iv.e);
           this.setAll(lit);
           if (now >= total) {
@@ -1238,6 +1341,9 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
     }
     return out;
   }
+  function totalMs(segments) {
+    return segments.reduce((s, x) => s + x.ms, 0);
+  }
   function scheduleForEntries(data, entries, s) {
     const unit = unitMsFor(data, s.speedCpm);
     return buildSchedule(
@@ -1290,6 +1396,10 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
         return NUMBER_TABLE;
       case "kana-symbols":
         return [...KANA_TABLE, ...SYMBOL_TABLE];
+      case "kana-numbers":
+        return [...KANA_TABLE, ...NUMBER_TABLE];
+      case "symbols-numbers":
+        return [...SYMBOL_TABLE, ...NUMBER_TABLE];
       case "all":
         return [...KANA_TABLE, ...SYMBOL_TABLE, ...NUMBER_TABLE];
     }
@@ -1480,6 +1590,28 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
     paint();
     return h("div", { class: "ctl-group" }, h("p", { class: "set-label" }, "\u56DE\u7B54\u65B9\u5F0F"), h("div", { class: "chips" }, ...btns), note);
   }
+  function rangeControl(get, set) {
+    let parts = partsOfPool(get());
+    const note = h("p", { class: "note chip-note" });
+    const btns = RANGE_PARTS.map(
+      (r) => h("button", { class: "chip", "aria-pressed": "false", onclick: () => {
+        const on = parts.includes(r.part);
+        if (on && parts.length === 1) {
+          note.textContent = "\u7BC4\u56F2\u306F\u3001\u3072\u3068\u3064\u306F\u9078\u3093\u3067\u304F\u3060\u3055\u3044\u3002";
+          return;
+        }
+        parts = RANGE_PARTS.map((x) => x.part).filter((x) => x === r.part ? !on : parts.includes(x));
+        set(poolFromParts(parts));
+        paint();
+      } }, r.label)
+    );
+    const paint = () => {
+      btns.forEach((b, i) => b.setAttribute("aria-pressed", String(parts.includes(RANGE_PARTS[i].part))));
+      note.textContent = `\u9078\u3093\u3060\u7BC4\u56F2\uFF08${RANGE_PARTS.filter((r) => parts.includes(r.part)).map((r) => r.label).join("\u30FB")}\uFF09\u304B\u3089\u51FA\u984C\u3057\u307E\u3059\u3002\u3044\u304F\u3064\u3067\u3082\u9078\u3079\u307E\u3059\u3002`;
+    };
+    paint();
+    return h("div", { class: "ctl-group" }, h("p", { class: "set-label" }, "\u51FA\u984C\u3059\u308B\u7BC4\u56F2"), h("div", { class: "chips" }, ...btns), note);
+  }
 
   // src/renderer/screens/quiz.ts
   var MODES = [
@@ -1488,12 +1620,6 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
     { kind: "sound-to-char", title: "\u97F3 \u2192 \u6587\u5B57", hint: "\u97F3\u3092\u805E\u3044\u3066\u3001\u6587\u5B57\u3092\u9078\u3076" },
     { kind: "light-to-code", title: "\u5186 \u2192 \u7B26\u53F7", hint: "\u9EC4\u8272\u3044\u5186\u306E\u70B9\u706F\u3060\u3051\u3092\u898B\u3066\u3001\u7B26\u53F7\u3092\u9078\u3076" },
     { kind: "light-to-char", title: "\u5186 \u2192 \u6587\u5B57", hint: "\u9EC4\u8272\u3044\u5186\u306E\u70B9\u706F\u3060\u3051\u3092\u898B\u3066\u3001\u6587\u5B57\u3092\u9078\u3076" }
-  ];
-  var POOLS = [
-    { pool: "kana", label: "\u304B\u306A\uFF08\u30A2\u301C\u30F3\uFF09" },
-    { pool: "kana-symbols", label: "\u304B\u306A + \u6FC1\u70B9\u30FB\u8A18\u53F7" },
-    { pool: "numbers", label: "\u6570\u5B57" },
-    { pool: "all", label: "\u304B\u306A + \u6FC1\u70B9\u30FB\u8A18\u53F7 + \u6570\u5B57" }
   ];
   var isSignal = (k) => k === "sound-to-char" || k === "light-to-code" || k === "light-to-char";
   var needsSound = (k) => k === "sound-to-char";
@@ -1547,14 +1673,6 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
   var practiceScreen = (root, ctx) => {
     let pool = ctx.settings.practicePool;
     const warn = h("p", { class: "warn", "aria-live": "polite" });
-    const poolBtns = POOLS.map(
-      (p) => h("button", { class: "chip", "aria-pressed": String(p.pool === pool), onclick: () => {
-        pool = p.pool;
-        ctx.settings.practicePool = pool;
-        void ctx.saveSettings();
-        poolBtns.forEach((b, i) => b.setAttribute("aria-pressed", String(POOLS[i].pool === pool)));
-      } }, p.label)
-    );
     const start = (m) => {
       if (needsSound(m.kind) && !ctx.settings.soundOn) {
         warn.textContent = SOUND_OFF_MESSAGE;
@@ -1576,7 +1694,11 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
     );
     root.append(
       h("div", { class: "topbar" }, h("button", { class: "back", onclick: () => ctx.go(menuScreen) }, "\u2190 \u30E1\u30CB\u30E5\u30FC"), h("h2", {}, "\u7DF4\u7FD2\u554F\u984C")),
-      h("div", { class: "ctl-group" }, h("p", { class: "set-label" }, "\u51FA\u984C\u3059\u308B\u7BC4\u56F2"), h("div", { class: "chips" }, ...poolBtns)),
+      rangeControl(() => pool, (v) => {
+        pool = v;
+        ctx.settings.practicePool = pool;
+        void ctx.saveSettings();
+      }),
       answerStyleControl(ctx),
       h("h3", { class: "group-title" }, "\u554F\u984C\u306E\u7A2E\u985E\u3092\u3048\u3089\u3076\uFF08\u62BC\u3059\u3068\u59CB\u307E\u308A\u307E\u3059\uFF09"),
       warn,
@@ -1896,7 +2018,11 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
       h("p", { class: "set-sub" }, "\u97F3\u3068\u5186"),
       chipRow(kindItems(MODES.filter((m) => isSignal(m.kind)).map((m) => m.kind)), () => kind, (v) => kind = v)
     ];
-    const poolRow = chipRow(POOLS.map((p) => ({ value: p.pool, label: p.label })), () => pool, (v) => pool = v);
+    const poolRow = rangeControl(() => pool, (v) => {
+      pool = v;
+      remember();
+      warn.textContent = "";
+    });
     startBtn.addEventListener("click", () => {
       if ((kind === "sound-to-char" || kind === "mixed") && !settings.soundOn) {
         warn.textContent = SOUND_OFF_MESSAGE;
@@ -1910,7 +2036,7 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
       h("p", { class: "lead" }, "\u7D9A\u3051\u3066\u51FA\u984C\u3057\u3001\u7B54\u3048\u306F\u6700\u5F8C\u306B\u307E\u3068\u3081\u3066\u8868\u793A\u3057\u307E\u3059\u3002"),
       h("div", { class: "ctl-group" }, h("p", { class: "set-label" }, "\u554F\u984C\u6570"), countRow),
       h("div", { class: "ctl-group" }, h("p", { class: "set-label" }, "\u51FA\u984C\u306E\u7A2E\u985E"), ...kindRows, kindHint),
-      h("div", { class: "ctl-group" }, h("p", { class: "set-label" }, "\u51FA\u984C\u3059\u308B\u7BC4\u56F2"), poolRow),
+      poolRow,
       answerStyleControl(ctx),
       h(
         "div",
@@ -2843,6 +2969,217 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
     };
   };
 
+  // src/core/dictation.ts
+  var DICTATION_COUNT = 50;
+  function buildDictation(data, pool, count2 = DICTATION_COUNT, rng = Math.random) {
+    const all = poolEntries(data, pool);
+    const out = [];
+    while (out.length < count2) {
+      const bag = shuffle(all, rng);
+      if (bag.length > 1 && out.length > 0 && bag[0].id === out[out.length - 1].id) bag.push(bag.shift());
+      out.push(...bag);
+    }
+    return out.slice(0, count2);
+  }
+  function dictationTimeline(data, entries, s) {
+    const unit = unitMsFor(data, s.speedCpm);
+    const t = data.timing;
+    const codes = entries.map((e) => data.codeOf(e, s.shortNumbers));
+    const segments = buildSchedule(codes, t, unit, s.spacing);
+    const starts = [];
+    let cursor = 0;
+    codes.forEach((c, i) => {
+      starts.push(cursor);
+      cursor += totalMs(buildSchedule([c], t, unit, s.spacing));
+      if (i < codes.length - 1) cursor += t.charGap * unit * s.spacing;
+    });
+    return { segments, starts, totalMs: totalMs(segments) };
+  }
+  function indexAt(starts, elapsedMs) {
+    let k = 0;
+    for (let i = 0; i < starts.length; i++) if (starts[i] <= elapsedMs) k = i;
+    return k;
+  }
+
+  // src/renderer/screens/dictation.ts
+  var dictationSetupScreen = (root, ctx) => {
+    const { settings } = ctx;
+    let pool = settings.dictationPool;
+    const speed = h("p", { class: "note" });
+    speed.textContent = `\u901F\u3055\uFF1A${settings.speedCpm} \u5B57/\u5206\u3000\u6587\u5B57\u306E\u9593\u9694\uFF1A${settings.spacing === 1 ? "\u6A19\u6E96" : `${settings.spacing} \u500D`}\u3000\u97F3\uFF1A${settings.soundOn ? "ON" : "OFF\uFF08\u5186\u3060\u3051\uFF09"}\u3000\uFF08\u8A2D\u5B9A\u3067\u5909\u3048\u3089\u308C\u307E\u3059\uFF09`;
+    const start = h("button", { class: "primary start", onclick: () => {
+      ctx.player.prime();
+      ctx.go(dictationRunScreen(buildDictation(ctx.data, pool), pool));
+    } }, `${DICTATION_COUNT}\u6587\u5B57\u3092\u6253\u3061\u59CB\u3081\u308B`);
+    root.append(
+      h("div", { class: "topbar" }, h("button", { class: "back", onclick: () => ctx.go(menuScreen) }, "\u2190 \u30E1\u30CB\u30E5\u30FC"), h("h2", {}, "\u66F8\u304D\u53D6\u308A\u7DF4\u7FD2")),
+      h("p", { class: "lead" }, `\u30E9\u30F3\u30C0\u30E0\u306A\u6587\u5B57\u3092\u3001${DICTATION_COUNT}\u6587\u5B57\u3064\u3065\u3051\u3066\u6253\u3061\u307E\u3059\u3002\u7B54\u3048\u306F\u51FA\u3055\u306A\u3044\u306E\u3067\u3001\u7D19\u3084\u30E1\u30E2\u306B\u66F8\u304D\u53D6\u3063\u3066\u304F\u3060\u3055\u3044\u3002\u7D42\u308F\u3063\u305F\u3089\u3001${DICTATION_COUNT}\u6587\u5B57\u3076\u3093\u306E\u7B54\u3048\u3092\u4E00\u89A7\u3067\u898B\u3089\u308C\u307E\u3059\u3002`),
+      rangeControl(() => pool, (v) => {
+        pool = v;
+        settings.dictationPool = pool;
+        void ctx.saveSettings();
+      }),
+      speed,
+      h("div", { class: "sticky-start" }, start)
+    );
+  };
+  var FINAL_CHECK_SECONDS = 5;
+  function dictationRunScreen(entries, pool) {
+    return (root, ctx) => {
+      const { data, settings, player } = ctx;
+      const total = entries.length;
+      const lamp = createIndicator("large");
+      player.attach(lamp.indicator);
+      const progress = h("div", { class: "score dict-progress" });
+      const fill = h("div", { class: "bar-fill" });
+      const status = h("p", { class: "dict-status", "aria-live": "polite" });
+      const pauseBtn = h("button", { class: "secondary" });
+      const quitBtn = h("button", { class: "secondary", onclick: () => ctx.go(dictationSetupScreen) }, "\u3084\u3081\u308B");
+      let state = "countdown";
+      let base = 0;
+      let resumeAt = 0;
+      let origin = 0;
+      let starts = [];
+      let timer = 0;
+      let tick = 0;
+      let done = false;
+      const clearTimers = () => {
+        window.clearTimeout(timer);
+        window.clearInterval(tick);
+      };
+      const currentIndex = () => starts.length ? base + indexAt(starts, performance.now() - origin) : base;
+      const paintProgress = (n) => {
+        progress.textContent = `${Math.min(n + 1, total)} / ${total} \u6587\u5B57\u76EE`;
+        fill.style.width = `${Math.min(n, total) / total * 100}%`;
+      };
+      const finish = () => {
+        done = true;
+        clearTimers();
+        player.stop();
+        showFinalCheck();
+      };
+      const play = (from) => {
+        state = "playing";
+        base = from;
+        starts = [];
+        const tl = dictationTimeline(data, entries.slice(from), settings);
+        pauseBtn.textContent = "\u4E00\u6642\u505C\u6B62";
+        status.textContent = "\u6253\u3063\u3066\u3044\u307E\u3059\u3002\u805E\u3044\u3066\uFF08\u898B\u3066\uFF09\u66F8\u304D\u53D6\u3063\u3066\u304F\u3060\u3055\u3044\u3002";
+        paintProgress(from);
+        void player.play(tl.segments, (o) => {
+          origin = o;
+          starts = tl.starts;
+        }).then((finished) => {
+          if (finished && !done && state === "playing") finish();
+        });
+        window.clearInterval(tick);
+        tick = window.setInterval(() => {
+          if (state === "playing") paintProgress(currentIndex());
+        }, 100);
+      };
+      const countdown = (from) => {
+        state = "countdown";
+        resumeAt = from;
+        pauseBtn.textContent = "\u4E00\u6642\u505C\u6B62";
+        let n = 3;
+        const step = () => {
+          if (n === 0) return play(from);
+          status.textContent = from === 0 ? `\u307E\u3082\u306A\u304F\u59CB\u307E\u308A\u307E\u3059\u2026${n}` : `${from + 1} \u6587\u5B57\u76EE\u304B\u3089\u3001\u3064\u3065\u3051\u307E\u3059\u2026${n}`;
+          n--;
+          timer = window.setTimeout(step, 1e3);
+        };
+        paintProgress(from);
+        step();
+      };
+      const pause = () => {
+        if (state === "paused" || done) return;
+        const at = state === "playing" ? currentIndex() : resumeAt;
+        clearTimers();
+        player.stop();
+        state = "paused";
+        resumeAt = at;
+        pauseBtn.textContent = "\u3064\u3065\u3051\u308B";
+        status.textContent = `\u4E00\u6642\u505C\u6B62\u4E2D\u3067\u3059\u3002\u300C\u3064\u3065\u3051\u308B\u300D\u3092\u62BC\u3059\u3068\u3001${at + 1} \u6587\u5B57\u76EE\u304B\u3089\u6253\u3061\u307E\u3059\u3002`;
+        paintProgress(at);
+      };
+      pauseBtn.addEventListener("click", () => state === "paused" ? countdown(resumeAt) : pause());
+      const onHide = () => {
+        if (document.visibilityState === "hidden") pause();
+      };
+      document.addEventListener("visibilitychange", onHide);
+      const showFinalCheck = () => {
+        let n = FINAL_CHECK_SECONDS;
+        const count2 = h("p", { class: "dict-final-count", "aria-live": "polite" });
+        const paintCount = () => {
+          count2.textContent = String(n);
+        };
+        const skip = h("button", { class: "secondary", onclick: () => {
+          window.clearTimeout(timer);
+          showAnswers();
+        } }, "\u3059\u3050\u7B54\u3048\u3092\u898B\u308B");
+        const step = () => {
+          if (n <= 0) return showAnswers();
+          paintCount();
+          n--;
+          timer = window.setTimeout(step, 1e3);
+        };
+        root.replaceChildren(
+          h("div", { class: "topbar" }, h("button", { class: "back", onclick: () => ctx.go(menuScreen) }, "\u2190 \u30E1\u30CB\u30E5\u30FC"), h("h2", {}, "\u6700\u5F8C\u306E\u78BA\u8A8D")),
+          h(
+            "div",
+            { class: "stage dict-final" },
+            h("p", { class: "lead dict-final-lead" }, `${total} \u6587\u5B57\u3092\u6253\u3061\u7D42\u308F\u308A\u307E\u3057\u305F\u3002\u66F8\u304D\u53D6\u3063\u305F\u3082\u306E\u3092\u3001\u3082\u3046\u4E00\u5EA6\u898B\u76F4\u3057\u3066\u304F\u3060\u3055\u3044\u3002`),
+            count2,
+            h("p", { class: "note" }, "\u79D2\u5F8C\u306B\u3001\u7B54\u3048\u3092\u8868\u793A\u3057\u307E\u3059\u3002"),
+            skip
+          )
+        );
+        step();
+      };
+      const showAnswers = () => {
+        const cell = (e, i) => h(
+          "div",
+          { class: "dict-cell" },
+          h("span", { class: "dict-no" }, String(i + 1)),
+          h("span", { class: "dict-ch" }, data.char(e, settings.charStyle)),
+          h("span", { class: "dict-code" }, formatCode(data.codeOf(e, settings.shortNumbers)))
+        );
+        root.replaceChildren(
+          h("div", { class: "topbar" }, h("button", { class: "back", onclick: () => ctx.go(menuScreen) }, "\u2190 \u30E1\u30CB\u30E5\u30FC"), h("h2", {}, "\u66F8\u304D\u53D6\u308A\u306E\u7B54\u3048")),
+          h("p", { class: "lead" }, `\u6253\u3063\u305F ${total} \u6587\u5B57\u306E\u7B54\u3048\u3067\u3059\u3002\u66F8\u304D\u53D6\u3063\u305F\u3082\u306E\u3068\u898B\u6BD4\u3079\u3066\u304F\u3060\u3055\u3044\u3002`),
+          h("div", { class: "dict-grid" }, ...entries.map(cell)),
+          h(
+            "div",
+            { class: "result-actions" },
+            h("button", { class: "primary", onclick: () => {
+              player.prime();
+              ctx.go(dictationRunScreen(buildDictation(data, pool), pool));
+            } }, "\u65B0\u3057\u3044\u6587\u5B57\u3067\u3082\u3046\u4E00\u5EA6"),
+            h("button", { class: "secondary", onclick: () => {
+              player.prime();
+              ctx.go(dictationRunScreen(entries, pool));
+            } }, "\u540C\u3058\u6587\u5B57\u3092\u3082\u3046\u4E00\u5EA6"),
+            h("button", { class: "secondary", onclick: () => ctx.go(dictationSetupScreen) }, "\u7BC4\u56F2\u3092\u5909\u3048\u308B")
+          )
+        );
+      };
+      root.append(
+        h("div", { class: "topbar" }, h("button", { class: "back", onclick: () => ctx.go(dictationSetupScreen) }, "\u2190 \u3084\u3081\u308B"), h("h2", {}, "\u66F8\u304D\u53D6\u308A\u7DF4\u7FD2")),
+        progress,
+        h("div", { class: "bar" }, fill),
+        h("div", { class: "stage dict-stage" }, lamp.el, status),
+        h("div", { class: "result-actions dict-actions" }, pauseBtn, quitBtn)
+      );
+      countdown(0);
+      return () => {
+        document.removeEventListener("visibilitychange", onHide);
+        clearTimers();
+        player.stop();
+        player.detach(lamp.indicator);
+      };
+    };
+  }
+
   // src/renderer/screens/menu.ts
   var menuScreen = (root, ctx) => {
     const reviewCount = ctx.records.review.length;
@@ -2864,6 +3201,7 @@ select, input[type="text"], input[type="search"] { max-width:100%; }
             hint: reviewCount > 0 ? `\u5FA9\u7FD2\u3059\u308B\u554F\u984C\uFF1A${reviewCount}\u554F` : "\u9593\u9055\u3048\u305F\u554F\u984C\u304C\u305F\u307E\u308B\u3068\u4F7F\u3048\u307E\u3059",
             screen: reviewCount > 0 ? reviewScreen : void 0
           },
+          { label: "\u66F8\u304D\u53D6\u308A\u7DF4\u7FD2", hint: "50\u6587\u5B57\u3092\u7D9A\u3051\u3066\u6253\u3061\u3001\u6700\u5F8C\u306B\u7B54\u3048\u3092\u4E00\u89A7\u3067\u898B\u308B", screen: dictationSetupScreen },
           { label: "\u82E6\u624B\u306A\u6587\u5B57", hint: weakCount > 0 ? `\u82E6\u624B\u306A\u6587\u5B57\uFF1A${weakCount}\u6587\u5B57` : "\u9593\u9055\u3048\u3084\u3059\u3044\u6587\u5B57\u3092\u7DF4\u7FD2", screen: weakScreen }
         ]
       },

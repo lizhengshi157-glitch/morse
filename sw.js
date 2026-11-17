@@ -1,5 +1,5 @@
 // 和文モールス：オフライン用 Service Worker（自動生成）
-const CACHE = 'morse-1c81c4401d';
+const CACHE = 'morse-7bcdbcc805';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
